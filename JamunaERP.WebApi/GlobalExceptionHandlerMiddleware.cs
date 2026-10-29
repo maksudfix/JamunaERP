@@ -1,80 +1,94 @@
-﻿using FluentValidation;
+﻿using System.Text.Json;
+using FluentValidation;
 using JamunaERP.Application.Common.Exceptions;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
 
-namespace JamunaERP.WebApi.Middleware
+namespace JamunaERP.WebApi.Middleware;
+
+public sealed class GlobalExceptionHandlerMiddleware(
+    RequestDelegate next,
+    ILogger<GlobalExceptionHandlerMiddleware> logger)
 {
-    public class GlobalExceptionHandlerMiddleware
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    public async Task InvokeAsync(HttpContext context)
     {
-        private readonly RequestDelegate _next;
-        private readonly ILogger<GlobalExceptionHandlerMiddleware> _logger;
-
-        public GlobalExceptionHandlerMiddleware(RequestDelegate next, ILogger<GlobalExceptionHandlerMiddleware> logger)
+        try
         {
-            _next = next;
-            _logger = logger;
+            await next(context);
         }
-
-        public async Task InvokeAsync(HttpContext context)
+        catch (Exception ex)
         {
-            try
+            if (context.Response.HasStarted)
+                throw;
+
+            var (status, title, detail, errors) = MapException(ex);
+
+            if (status >= 500)
+                logger.LogError(ex, "Unhandled exception");
+            else
+                logger.LogWarning("Request failed with {Status}: {Detail}", status, detail);
+
+            var problem = new ProblemDetails
             {
-                await _next(context);
-            }
-            catch (Exception ex)
-            {
-                var (status, title, detail, errors) = Map(ex);
+                Status = status,
+                Title = title,
+                Detail = detail,
+                Instance = context.Request.Path
+            };
 
-                if (status >= 500)
-                    _logger.LogError(ex, "Unhandled exception");
-                else
-                    _logger.LogWarning("Request failed with {Status}: {Detail}", status, detail);
+            if (errors is not null)
+                problem.Extensions["errors"] = errors;
 
-                if (context.Response.HasStarted) throw;
+            context.Response.Clear();
+            context.Response.StatusCode = status;
+            context.Response.ContentType = "application/problem+json";
 
-                var problem = new ProblemDetails
+            await JsonSerializer.SerializeAsync(
+                context.Response.Body,
+                problem,
+                JsonOptions,
+                context.RequestAborted);
+        }
+    }
+
+    private static (int Status, string Title, string Detail, object? Errors) MapException(Exception ex)
+    {
+        return ex switch
+        {
+            ValidationException validation => (
+                400,
+                "Validation failed",
+                "One or more validation errors occurred.",
+                validation.Errors.Select(error => new
                 {
-                    Status = status,
-                    Title = title,
-                    Detail = detail,
-                    Instance = context.Request.Path
-                };
-                if (errors is not null) problem.Extensions["errors"] = errors;
-
-                context.Response.Clear();
-                context.Response.StatusCode = status;
-                context.Response.ContentType = "application/problem+json";
-                await context.Response.WriteAsync(JsonSerializer.Serialize(problem,
-                    new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-            }
-        }
-
-        private static (int Status, string Title, string Detail, object? Errors) Map(Exception ex) => ex switch
-        {
-            ValidationException v => (400, "Validation failed", "One or more validation errors occurred.",
-                v.Errors.Select(e => new { field = e.PropertyName, message = e.ErrorMessage })),
-
+                    field = error.PropertyName,
+                    message = error.ErrorMessage
+                }).ToArray()),
+            ForbiddenException => (403, "Forbidden", ex.Message, null),
             KeyNotFoundException => (404, "Not found", ex.Message, null),
-
             InsufficientStockException => (409, "Insufficient stock", ex.Message, null),
             BusinessRuleException => (422, "Business rule violated", ex.Message, null),
-
-            // Must come BEFORE DbUpdateException (it is a subclass)
-            DbUpdateConcurrencyException => (409, "Concurrency conflict",
-                "The record was modified by someone else. Reload and try again.", null),
-
-            DbUpdateException { InnerException: SqlException { Number: 2601 or 2627 } } =>
-                (409, "Duplicate value", "A record with the same unique value already exists.", null),
-
-            DbUpdateException { InnerException: SqlException { Number: 547 } } =>
-                (409, "Related record conflict",
-                 "The operation conflicts with a related record (missing or still referenced).", null),
-
+            DbUpdateConcurrencyException => (
+                409,
+                "Concurrency conflict",
+                "The record was modified by someone else. Reload and try again.",
+                null),
+            DbUpdateException { InnerException: SqlException { Number: 2601 or 2627 } } => (
+                409,
+                "Duplicate value",
+                "A record with the same unique value already exists.",
+                null),
+            DbUpdateException { InnerException: SqlException { Number: 547 } } => (
+                409,
+                "Related record conflict",
+                "The operation conflicts with a related record.",
+                null),
             DbUpdateException => (500, "Database error", "A database error occurred.", null),
-
             _ => (500, "Server error", "An unexpected error occurred.", null)
         };
     }
