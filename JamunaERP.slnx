@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="JamunaERP.Application.UnitTests/JamunaERP.Application.UnitTests.csproj" />
+  <Project Path="JamunaERP.Application/JamunaERP.Application.csproj" />
+  <Project Path="JamunaERP.Domain/JamunaERP.Domain.csproj" />
+  <Project Path="JamunaERP.Infrastructure/JamunaERP.Infrastructure.csproj" />
+  <Project Path="JamunaERP.WebApi/JamunaERP.WebApi.csproj" />
+</Solution>
