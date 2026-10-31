@@ -130,7 +130,7 @@ dotnet test
 
 
 ## Future Plan
-### Front End - React
+### Front End - Angular
 
 ### AI-Powered Search
 Let staff find information by typing normal sentences instead of using filters.
